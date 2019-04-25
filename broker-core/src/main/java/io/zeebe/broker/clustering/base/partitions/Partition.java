@@ -34,11 +34,13 @@ import io.zeebe.servicecontainer.Injector;
 import io.zeebe.servicecontainer.Service;
 import io.zeebe.servicecontainer.ServiceStartContext;
 import io.zeebe.servicecontainer.ServiceStopContext;
+import java.util.function.Consumer;
 
 /** Service representing a partition. */
 public class Partition implements Service<Partition> {
   public static final String PARTITION_NAME_FORMAT = "raft-atomix-partition-%d";
   private final ClusterEventService eventService;
+  private final int maxSnapshots;
   private StateReplication processorStateReplication;
   private StateReplication exporterStateReplication;
 
@@ -57,10 +59,15 @@ public class Partition implements Service<Partition> {
   private SnapshotController exporterSnapshotController;
   private StateSnapshotController processorSnapshotController;
 
-  public Partition(ClusterEventService eventService, final int partitionId, final RaftState state) {
+  public Partition(
+      ClusterEventService eventService,
+      final int partitionId,
+      final RaftState state,
+      final int maxSnapshots) {
     this.partitionId = partitionId;
     this.state = state;
     this.eventService = eventService;
+    this.maxSnapshots = maxSnapshots;
   }
 
   @Override
@@ -77,15 +84,27 @@ public class Partition implements Service<Partition> {
         new StateSnapshotController(
             DefaultZeebeDbFactory.defaultFactory(ExporterColumnFamilies.class),
             exporterStateStorage,
-            exporterStateReplication);
+            exporterStateReplication,
+            pos -> {},
+            maxSnapshots);
 
     final String streamProcessorName = ZbStreamProcessorService.PROCESSOR_NAME;
     final StateStorage stateStorage = stateStorageFactory.create(partitionId, streamProcessorName);
     processorStateReplication =
         new StateReplication(eventService, partitionId, streamProcessorName);
+
+    Consumer<Long> snapshotReplicatedCallback = pos -> {};
+    if (state == RaftState.FOLLOWER) {
+      snapshotReplicatedCallback = logStream::delete;
+    }
+
     processorSnapshotController =
         new StateSnapshotController(
-            DefaultZeebeDbFactory.DEFAULT_DB_FACTORY, stateStorage, processorStateReplication);
+            DefaultZeebeDbFactory.DEFAULT_DB_FACTORY,
+            stateStorage,
+            processorStateReplication,
+            snapshotReplicatedCallback,
+            maxSnapshots);
 
     if (state == RaftState.FOLLOWER) {
       processorSnapshotController.consumeReplicatedSnapshots();

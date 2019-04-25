@@ -44,6 +44,7 @@ public class StorageConfiguration {
   private int partitionId;
   private long logSegmentSize;
   private long indexBlockSize;
+  private int maxSnapshots;
 
   public StorageConfiguration(
       final File metaFile,

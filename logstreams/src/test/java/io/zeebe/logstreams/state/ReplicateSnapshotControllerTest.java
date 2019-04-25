@@ -17,6 +17,8 @@ package io.zeebe.logstreams.state;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.groups.Tuple.tuple;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 import io.zeebe.db.impl.DefaultColumnFamily;
 import io.zeebe.db.impl.rocksdb.ZeebeRocksDbFactory;
@@ -45,6 +47,7 @@ public class ReplicateSnapshotControllerTest {
   private StateSnapshotController replicatorSnapshotController;
   private StateSnapshotController receiverSnapshotController;
   private Replicator replicator;
+  private NoopConsumer snapshotReplicatedCallback;
 
   @Before
   public void setup() throws IOException {
@@ -57,13 +60,23 @@ public class ReplicateSnapshotControllerTest {
     final StateStorage receiverStorage =
         new StateStorage(receiverRuntimeDirectory, receiverSnapshotsDirectory);
 
+    snapshotReplicatedCallback = spy(new NoopConsumer());
     replicator = new Replicator();
     replicatorSnapshotController =
         new StateSnapshotController(
-            ZeebeRocksDbFactory.newFactory(DefaultColumnFamily.class), storage, replicator);
+            ZeebeRocksDbFactory.newFactory(DefaultColumnFamily.class),
+            storage,
+            replicator,
+            pos -> {},
+            1);
+
     receiverSnapshotController =
         new StateSnapshotController(
-            ZeebeRocksDbFactory.newFactory(DefaultColumnFamily.class), receiverStorage, replicator);
+            ZeebeRocksDbFactory.newFactory(DefaultColumnFamily.class),
+            receiverStorage,
+            replicator,
+            snapshotReplicatedCallback::noop,
+            2);
 
     autoCloseableRule.manage(replicatorSnapshotController);
     autoCloseableRule.manage(receiverSnapshotController);
@@ -147,6 +160,21 @@ public class ReplicateSnapshotControllerTest {
     assertThat(valueFromSnapshot).isEqualTo(VALUE);
   }
 
+  @Test
+  public void shouldInvokeCallbackOnReplicatedSnapshot() {
+    // given
+    receiverSnapshotController.consumeReplicatedSnapshots();
+    replicatorSnapshotController.takeSnapshot(1);
+    replicatorSnapshotController.replicateLatestSnapshot(Runnable::run);
+
+    // when
+    replicatorSnapshotController.takeSnapshot(2);
+    replicatorSnapshotController.replicateLatestSnapshot(Runnable::run);
+
+    // then
+    verify(snapshotReplicatedCallback).noop(2);
+  }
+
   private final class Replicator implements SnapshotReplication {
 
     final List<SnapshotChunk> replicatedChunks = new ArrayList<>();
@@ -167,5 +195,9 @@ public class ReplicateSnapshotControllerTest {
 
     @Override
     public void close() {}
+  }
+
+  public class NoopConsumer {
+    public void noop(long position) {}
   }
 }

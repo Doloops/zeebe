@@ -40,17 +40,25 @@ public class StateSnapshotController implements SnapshotController {
   private final StateStorage storage;
   private final SnapshotReplication replication;
   private final ZeebeDbFactory zeebeDbFactory;
+  private final Consumer<Long> snapshotReplicatedCallback;
+  private final int maxSnapshots;
   private ZeebeDb db;
 
   public StateSnapshotController(final ZeebeDbFactory rocksDbFactory, final StateStorage storage) {
-    this(rocksDbFactory, storage, new NoneSnapshotReplication());
+    this(rocksDbFactory, storage, new NoneSnapshotReplication(), pos -> {}, 1);
   }
 
   public StateSnapshotController(
-      ZeebeDbFactory zeebeDbFactory, StateStorage storage, SnapshotReplication replication) {
+      ZeebeDbFactory zeebeDbFactory,
+      StateStorage storage,
+      SnapshotReplication replication,
+      Consumer<Long> snapshotReplicatedCallback,
+      final int maxSnapshots) {
     this.storage = storage;
     this.replication = replication;
     this.zeebeDbFactory = zeebeDbFactory;
+    this.snapshotReplicatedCallback = snapshotReplicatedCallback;
+    this.maxSnapshots = maxSnapshots;
   }
 
   @Override
@@ -174,6 +182,10 @@ public class StateSnapshotController implements SnapshotController {
             totalChunkCount,
             validSnapshotDirectory.toPath());
         Files.move(tmpSnapshotDirectory.toPath(), validSnapshotDirectory.toPath());
+
+        if (getValidSnapshotsCount() >= maxSnapshots) {
+          snapshotReplicatedCallback.accept(snapshotChunk.getSnapshotPosition());
+        }
       } else {
         LOG.debug(
             "Waiting for more snapshot chunks, currently have {}/{}.",

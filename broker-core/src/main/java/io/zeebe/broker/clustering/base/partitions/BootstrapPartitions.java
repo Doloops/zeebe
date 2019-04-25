@@ -101,7 +101,8 @@ public class BootstrapPartitions implements Service<Void> {
         partitionInstallServiceName(partitionName);
 
     final PartitionInstallService partitionInstallService =
-        new PartitionInstallService(atomix.getEventService(), configuration);
+        new PartitionInstallService(
+            atomix.getEventService(), configuration, brokerCfg.getData().getMaxSnapshots());
 
     startContext.createService(partitionInstallServiceName, partitionInstallService).install();
   }

@@ -63,6 +63,7 @@ public class PartitionInstallService extends Actor
   private final StorageConfiguration configuration;
   private final int partitionId;
   private final ClusterEventService clusterEventService;
+  private final int maxSnapshots;
 
   private ServiceStartContext startContext;
   private ServiceName<LogStream> logStreamServiceName;
@@ -77,10 +78,13 @@ public class PartitionInstallService extends Actor
   private ActorFuture<Void> transitionFuture;
 
   public PartitionInstallService(
-      ClusterEventService clusterEventService, final StorageConfiguration configuration) {
+      ClusterEventService clusterEventService,
+      final StorageConfiguration configuration,
+      final int maxSnapshots) {
     this.configuration = configuration;
     this.partitionId = configuration.getPartitionId();
     this.clusterEventService = clusterEventService;
+    this.maxSnapshots = maxSnapshots;
   }
 
   @Override
@@ -202,7 +206,8 @@ public class PartitionInstallService extends Actor
 
   private ActorFuture<Void> installLeaderPartition(long leaderTerm) {
     LOG.debug("Installing leader partition service for partition {}", partitionId);
-    final Partition partition = new Partition(clusterEventService, partitionId, RaftState.LEADER);
+    final Partition partition =
+        new Partition(clusterEventService, partitionId, RaftState.LEADER, maxSnapshots);
 
     final CompositeServiceBuilder leaderInstallService =
         startContext.createComposite(leaderInstallRootServiceName);
@@ -238,7 +243,8 @@ public class PartitionInstallService extends Actor
 
   private ActorFuture<Partition> installFollowerPartition() {
     LOG.debug("Installing follower partition service for partition {}", partitionId);
-    final Partition partition = new Partition(clusterEventService, partitionId, RaftState.FOLLOWER);
+    final Partition partition =
+        new Partition(clusterEventService, partitionId, RaftState.FOLLOWER, maxSnapshots);
 
     return startContext
         .createService(followerPartitionServiceName, partition)

@@ -20,18 +20,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.zeebe.broker.Broker;
 import io.zeebe.broker.Loggers;
+import io.zeebe.broker.it.DataDeleteTest;
 import io.zeebe.broker.it.GrpcClientRule;
 import io.zeebe.client.ZeebeClient;
 import io.zeebe.model.bpmn.Bpmn;
 import io.zeebe.model.bpmn.BpmnModelInstance;
+import io.zeebe.protocol.intent.MessageIntent;
+import io.zeebe.test.util.TestUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.Adler32;
 import java.util.zip.CheckedInputStream;
 import org.junit.Before;
@@ -48,13 +54,7 @@ public class SnapshotReplicationTest {
       Bpmn.createExecutableProcess("process").startEvent().endEvent().done();
 
   public ClusteringRule clusteringRule =
-      new ClusteringRule(
-          PARTITION_COUNT,
-          3,
-          3,
-          brokerCfg -> {
-            brokerCfg.getData().setSnapshotPeriod("1s");
-          });
+      new ClusteringRule(PARTITION_COUNT, 3, 3, DataDeleteTest::configureForDeletionTest);
   public GrpcClientRule clientRule = new GrpcClientRule(clusteringRule);
 
   @Rule public RuleChain ruleChain = RuleChain.outerRule(clusteringRule).around(clientRule);
@@ -66,6 +66,7 @@ public class SnapshotReplicationTest {
   @Before
   public void init() {
     client = clientRule.getClient();
+    clusteringRule.getClock().pinCurrentTime();
   }
 
   @Test
@@ -74,6 +75,7 @@ public class SnapshotReplicationTest {
     client.newDeployCommand().addWorkflowModel(WORKFLOW, "workflow.bpmn").send().join();
     final int leaderNodeId = clusteringRule.getLeaderForPartition(1).getNodeId();
     final Broker leader = clusteringRule.getBroker(leaderNodeId);
+    clusteringRule.getClock().addTime(Duration.ofSeconds(DataDeleteTest.SNAPSHOT_PERIOD_SECONDS));
 
     // when - snapshot
     waitForValidSnapshotAtBroker(leader);
@@ -96,9 +98,69 @@ public class SnapshotReplicationTest {
     assertThat(checksumFirstNode).isEqualTo(brokerSnapshotChecksums.get(2));
   }
 
+  @Test
+  public void shouldDeleteDataOnFollowers() {
+    // given
+    clientRule.deployWorkflow(WORKFLOW);
+    final int leaderNodeId = clusteringRule.getLeaderForPartition(1).getNodeId();
+    final List<Broker> followers =
+        clusteringRule.getBrokers().stream()
+            .filter(b -> b.getConfig().getCluster().getNodeId() != leaderNodeId)
+            .collect(Collectors.toList());
+
+    // when
+    final Stream<File> segmentDirs = followers.stream().map(this::getSegmentsDirectory);
+    int messagesSent = 0;
+
+    while (segmentDirs.anyMatch(dir -> dir.listFiles().length <= 2)) {
+      clientRule
+          .getClient()
+          .newPublishMessageCommand()
+          .messageName("msg")
+          .correlationKey("key")
+          .send()
+          .join();
+      ++messagesSent;
+    }
+
+    // when
+    final int finalMessagesSent = messagesSent;
+    TestUtil.waitUntil(
+        () ->
+            DataDeleteTest.TestExporter.records.stream()
+                    .filter(r -> r.getMetadata().getIntent() == MessageIntent.PUBLISHED)
+                    .limit(finalMessagesSent)
+                    .count()
+                == finalMessagesSent);
+
+    final HashMap<Integer, Integer> followerSegmentCounts = new HashMap();
+    followers.forEach(
+        b -> {
+          final int nodeId = b.getConfig().getCluster().getNodeId();
+          followerSegmentCounts.put(nodeId, getSegmentsDirectory(b).list().length);
+        });
+
+    clusteringRule.getClock().addTime(Duration.ofSeconds(DataDeleteTest.SNAPSHOT_PERIOD_SECONDS));
+    followers.forEach(this::waitForValidSnapshotAtBroker);
+
+    // then
+    TestUtil.waitUntil(
+        () ->
+            followers.stream()
+                .allMatch(
+                    b ->
+                        getSegmentsDirectory(b).listFiles().length
+                            == followerSegmentCounts.get(b.getConfig().getCluster().getNodeId())));
+  }
+
   private File getSnapshotsDirectory(Broker broker) {
     final String dataDir = broker.getConfig().getData().getDirectories().get(0);
     return new File(dataDir, "partition-1/state/1_zb-stream-processor/snapshots");
+  }
+
+  private File getSegmentsDirectory(Broker broker) {
+    final String dataDir = broker.getConfig().getData().getDirectories().get(0);
+    return new File(dataDir, "/partition-1/segments");
   }
 
   private void waitForValidSnapshotAtBroker(Broker broker) {
