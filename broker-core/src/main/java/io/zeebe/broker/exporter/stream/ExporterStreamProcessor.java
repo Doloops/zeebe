@@ -107,16 +107,7 @@ public class ExporterStreamProcessor implements StreamProcessor {
 
   @Override
   public long getPositionToRecoveryFrom() {
-    long lowestPosition = -1;
-
-    for (final ExporterContainer container : containers) {
-      container.position = state.getPosition(container.getId());
-
-      if (lowestPosition == -1 || lowestPosition > container.position) {
-        lowestPosition = container.position;
-      }
-    }
-    return lowestPosition;
+    return containers.stream().mapToLong(e -> e.position).min().orElse(-1);
   }
 
   @Override
